@@ -3,7 +3,6 @@ import time
 import random
 import sqlite3
 import logging
-from google import genai
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -11,14 +10,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 load_dotenv()
 NAUKRI_EMAIL = os.getenv("NAUKRI_EMAIL")
 NAUKRI_PASS = os.getenv("NAUKRI_PASS")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Try to read resume from a txt file first, fallback to .env
-try:
-    with open("resume.txt", "r", encoding="utf-8") as f:
-        RESUME_TEXT = f.read()
-except FileNotFoundError:
-    RESUME_TEXT = os.getenv("RESUME_TEXT", "")
 
 TARGET_KEYWORDS = ["NetSuite Developer", "NetSuite Technical Consultant", "NetSuite Integration"]
 MAX_APPLICATIONS_PER_DAY = 20
@@ -55,49 +46,41 @@ class Database:
 class NaukriBot:
     def __init__(self):
         self.db = Database()
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.applied_count = 0
 
-    def human_delay(self, min_sec=2, max_sec=5):
+    def human_delay(self, min_sec=1, max_sec=3):
         time.sleep(random.uniform(min_sec, max_sec))
         
     def is_relevant_job(self, title):
         core_tech = ["netsuite", "erp", "boomi", "celigo", "integration", "software", "developer", "engineer", "consultant"]
         return any(tech in title.lower() for tech in core_tech)
 
-    def answer_question(self, question_text, retries=3):
-        prompt = f"""
-        Act as Mosses Ross, a NetSuite Specialist.
-        Provide a brutally concise answer to this job application question.
-        
-        RULES:
-        - ALWAYS return ONLY the final answer text. No conversational filler, no prefixes.
-        - If it asks for Notice Period, output ONLY: 0
-        - If it asks for Current/Expected CTC, output ONLY: Negotiable
-        - If it asks for Location, output ONLY: Coimbatore
-        - If it asks for Total Experience, output ONLY: 2
-        - Otherwise, answer in 1 very short sentence based on this resume: {RESUME_TEXT}
-        
-        Question: {question_text}
+    def answer_question(self, question_text):
         """
-        for attempt in range(retries):
-            try:
-                response = self.client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt
-                )
-                # Strip out any markdown or whitespace the LLM might add
-                return response.text.strip().replace("`", "")
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    wait_time = (2 ** attempt) * 5
-                    logging.warning(f"LLM 429 Rate Limit Exhausted. Backing off for {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    logging.error(f"LLM Error answering question: {e}")
-                    return "Please refer to my attached resume for details."
+        Instant heuristic-based question answering.
+        Replaces the slow, rate-limited LLM.
+        """
+        q = question_text.lower()
         
-        return "Please refer to my attached resume for details."
+        # Notice Period
+        if any(word in q for word in ["notice", "period", "joining", "join"]):
+            return "0"
+            
+        # CTC / Salary
+        elif any(word in q for word in ["ctc", "salary", "expected", "current", "compensation", "lpa"]):
+            return "Negotiable"
+            
+        # Location
+        elif any(word in q for word in ["location", "city", "base", "relocate", "where"]):
+            return "Coimbatore"
+            
+        # Experience
+        elif any(word in q for word in ["experience", "exp", "years"]):
+            return "2"
+            
+        # Catch-all Default
+        else:
+            return "Please refer to my attached resume for details."
 
     def run(self):
         with sync_playwright() as p:
@@ -239,7 +222,7 @@ class NaukriBot:
             loops = 0
             
             while loops < max_loops:
-                job_page.wait_for_timeout(1500) # Give dynamic questions time to appear
+                job_page.wait_for_timeout(1000) # Give dynamic questions time to appear
                 
                 # Gather all currently visible inputs
                 visible_inputs = []
@@ -251,21 +234,17 @@ class NaukriBot:
                 empty_inputs = [f for f in visible_inputs if not f.input_value().strip()]
                 
                 if not empty_inputs:
-                    # Break out of the while loop; no new text questions to answer
                     break 
                     
                 logging.info(f"   -> Form Iteration {loops+1}: Found {len(empty_inputs)} new empty field(s). Answering...")
                 
                 for field in empty_inputs:
-                    # Double-check visibility as the DOM might have changed mid-loop
                     if not field.is_visible(): continue 
                     
                     try:
-                        # Attempt to get the broader div container for context
                         context_text = field.evaluate("el => el.closest('div').innerText")
                     except:
-                        # Fallback to just the placeholder
-                        context_text = field.get_attribute("placeholder") or "Job application question"
+                        context_text = field.get_attribute("placeholder") or ""
                     
                     answer = self.answer_question(context_text)
                     field.fill("")
@@ -280,7 +259,7 @@ class NaukriBot:
                 submit_btn.click()
                 job_page.wait_for_timeout(3000)
                 
-                # Check for UI validation errors or if submit button is STILL visible (meaning it failed)
+                # Check for UI validation errors or if submit button is STILL visible
                 error_msg = job_page.locator(".error-message, .required, text='Required'").first
                 if error_msg.is_visible() or submit_btn.is_visible():
                     logging.warning("   -> FORM INCOMPLETE: Unfilled dropdowns, radio buttons, or validation failed.")
