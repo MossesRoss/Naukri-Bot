@@ -52,7 +52,8 @@ class NaukriBot:
         time.sleep(random.uniform(min_sec, max_sec))
         
     def is_relevant_job(self, title):
-        core_tech = ["netsuite", "erp", "boomi", "celigo", "integration", "software", "developer", "engineer", "consultant"]
+        # STRCTLY restricted to prevent catching Medical Consultants or Civil Engineers
+        core_tech = ["netsuite", "erp", "boomi", "celigo"]
         return any(tech in title.lower() for tech in core_tech)
 
     def answer_question(self, question_text):
@@ -62,23 +63,14 @@ class NaukriBot:
         """
         q = question_text.lower()
         
-        # Notice Period
         if any(word in q for word in ["notice", "period", "joining", "join"]):
             return "0"
-            
-        # CTC / Salary
         elif any(word in q for word in ["ctc", "salary", "expected", "current", "compensation", "lpa"]):
             return "Negotiable"
-            
-        # Location
         elif any(word in q for word in ["location", "city", "base", "relocate", "where"]):
             return "Coimbatore"
-            
-        # Experience
         elif any(word in q for word in ["experience", "exp", "years"]):
-            return "2"
-            
-        # Catch-all Default
+            return "4"
         else:
             return "Please refer to my attached resume for details."
 
@@ -217,39 +209,95 @@ class NaukriBot:
             apply_button.click()
             job_page.wait_for_timeout(3000)
 
-            # --- SEQUENTIAL CASCADING FORM LOGIC ---
-            max_loops = 10
+            # --- SEQUENTIAL CASCADING FORM & CHATBOT LOGIC ---
+            max_loops = 15
             loops = 0
             
             while loops < max_loops:
-                job_page.wait_for_timeout(1000) # Give dynamic questions time to appear
+                job_page.wait_for_timeout(1000)
+                progress_made = False
                 
-                # Gather all currently visible inputs
-                visible_inputs = []
-                for field in job_page.locator("textarea, input[type='text'], input[type='number']").all():
-                    if field.is_visible():
-                        visible_inputs.append(field)
-                
-                # Filter down to inputs that haven't been typed in yet
-                empty_inputs = [f for f in visible_inputs if not f.input_value().strip()]
-                
-                if not empty_inputs:
+                # 1. Standard Text Inputs (STRICTLY excludes dropdowns/suggestors to prevent timeouts)
+                valid_text_selector = "textarea, input[type='text']:not(.ddInput):not(.suggestor-input):not(.nonSearched), input[type='number']"
+                for field in job_page.locator(valid_text_selector).all():
+                    if field.is_visible() and not field.input_value().strip():
+                        try:
+                            context_text = field.evaluate("el => el.closest('div').innerText")
+                        except:
+                            context_text = field.get_attribute("placeholder") or ""
+                        
+                        answer = self.answer_question(context_text)
+                        field.fill("")
+                        field.type(answer)
+                        self.human_delay(1, 2)
+                        progress_made = True
+
+                # 2. Standard Dropdowns (.ddInput)
+                for dd in job_page.locator("input.ddInput").all():
+                    if dd.is_visible() and not dd.input_value().strip():
+                        dd.click()
+                        job_page.wait_for_timeout(800)
+                        option = job_page.locator("ul.dropdown li:not(.heading):not(.disabled)").first
+                        if option.is_visible():
+                            option.click()
+                            self.human_delay(1, 2)
+                            progress_made = True
+                        else:
+                            dd.click() # Close it if no options are visible
+                            
+                # 3. Auto-Suggestors (.suggestor-input)
+                for sugg in job_page.locator("input.suggestor-input").all():
+                    if sugg.is_visible() and not sugg.input_value().strip():
+                        sugg.click()
+                        sugg.type("NetSuite", delay=100)
+                        job_page.wait_for_timeout(1500)
+                        sugg_opt = job_page.locator(".suggestor-tag, .drop-layer .opt:not(.opt-head)").first
+                        if sugg_opt.is_visible():
+                            sugg_opt.click()
+                            self.human_delay(1, 2)
+                            progress_made = True
+
+                # 4. Chatbot Text Areas
+                for cb_text in job_page.locator(".textArea[contenteditable='true']").all():
+                    if cb_text.is_visible() and not cb_text.inner_text().strip():
+                        try:
+                            context_text = job_page.locator(".botMsg").last.inner_text()
+                        except:
+                            context_text = "Question"
+                        answer = self.answer_question(context_text)
+                        cb_text.click()
+                        job_page.keyboard.type(answer)
+                        self.human_delay(1, 2)
+                        progress_made = True
+
+                # 5. Chatbot Interactive Options (Chips, Radio, Checkboxes)
+                if not progress_made:
+                    chatbot_options = job_page.locator(".chatbot_Chip:not(.chatbot_Selected), .ssrc__label, .mcc__label").all()
+                    visible_options = [opt for opt in chatbot_options if opt.is_visible()]
+                    if visible_options:
+                        # Find the best option if possible, otherwise click the first one
+                        best_opt = visible_options[0]
+                        for opt in visible_options:
+                            text = opt.inner_text().lower()
+                            if "netsuite" in text or "yes" in text or "3" in text or "4" in text or "5" in text:
+                                best_opt = opt
+                                break
+                        best_opt.click()
+                        self.human_delay(1, 2)
+                        progress_made = True
+
+                # 6. Chatbot Save/Next Button
+                chatbot_save_btn = job_page.locator(".sendMsg").first
+                if chatbot_save_btn.is_visible():
+                    # Ensure the button is actually enabled by checking its parent wrapper
+                    is_disabled = chatbot_save_btn.evaluate("el => el.parentElement.classList.contains('disabled')")
+                    if not is_disabled:
+                        chatbot_save_btn.click()
+                        self.human_delay(1, 2)
+                        progress_made = True
+
+                if not progress_made:
                     break 
-                    
-                logging.info(f"   -> Form Iteration {loops+1}: Found {len(empty_inputs)} new empty field(s). Answering...")
-                
-                for field in empty_inputs:
-                    if not field.is_visible(): continue 
-                    
-                    try:
-                        context_text = field.evaluate("el => el.closest('div').innerText")
-                    except:
-                        context_text = field.get_attribute("placeholder") or ""
-                    
-                    answer = self.answer_question(context_text)
-                    field.fill("")
-                    field.type(answer)
-                    self.human_delay(1, 2)
                     
                 loops += 1
 
@@ -259,21 +307,29 @@ class NaukriBot:
                 submit_btn.click()
                 job_page.wait_for_timeout(3000)
                 
-                # Check for UI validation errors or if submit button is STILL visible
-                error_msg = job_page.locator(".error-message, .required, text='Required'").first
-                if error_msg.is_visible() or submit_btn.is_visible():
-                    logging.warning("   -> FORM INCOMPLETE: Unfilled dropdowns, radio buttons, or validation failed.")
-                    self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
-                    return True 
-                
-                logging.info(f"   -> SUCCESS! Application submitted.")
-                self.db.log_job(job_id, title, company, "APPLIED")
-                self.applied_count += 1
-                return False 
-            else:
-                logging.warning("   -> NO SUBMIT BUTTON: Modal might require complex interaction.")
-                self.db.log_job(job_id, title, company, "MANUAL_NO_SUBMIT")
+            error_msg = job_page.locator(".error-message, .required, text='Required'").first
+            if error_msg.is_visible():
+                logging.warning("   -> FORM INCOMPLETE: UI Validation failed.")
+                self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
                 return True 
+                
+            # If standard submit button is STILL visible after clicking it, it failed.
+            if submit_btn.is_visible():
+                logging.warning("   -> FORM INCOMPLETE: Submit button still present.")
+                self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
+                return True
+                
+            # If it's a chatbot and the send button is still active/visible, we stalled out.
+            chatbot_send = job_page.locator(".sendMsg").first
+            if chatbot_send.is_visible():
+                logging.warning("   -> FORM INCOMPLETE: Chatbot stalled out.")
+                self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
+                return True
+                
+            logging.info(f"   -> SUCCESS! Application submitted.")
+            self.db.log_job(job_id, title, company, "APPLIED")
+            self.applied_count += 1
+            return False 
 
         except Exception as e:
             logging.error(f"   -> ERROR processing job: {e}")
