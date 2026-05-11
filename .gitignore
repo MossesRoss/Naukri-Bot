@@ -1,0 +1,6 @@
+.env
+bot_env/
+jobs.db
+__pycache__/
+*.py[cod]
+failure_state.png
