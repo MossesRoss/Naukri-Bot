@@ -4,6 +4,7 @@ import random
 import sqlite3
 import logging
 import urllib.parse
+import re
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -107,17 +108,20 @@ class AndersonFrankBot:
 
     def login(self, page):
         logging.info("Navigating to Anderson Frank profile page...")
-        page.goto("https://www.andersonfrank.com/profile")
+        try:
+            page.goto("https://www.andersonfrank.com/profile", wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightTimeoutError:
+            pass # Ignore if background scripts timeout, as long as DOM is loaded
         
         logging.info("=====================================================")
-        logging.info("⏳ WAITING 50 SECONDS FOR YOU TO MANUALLY LOG IN... ⏳")
-        logging.info("Please interact with the Chrome window now.")
+        logging.info("⏳ ACTION REQUIRED: Manual Login ⏳")
+        logging.info("Please interact with the Chrome window if you need to log in.")
         logging.info("=====================================================")
         
-        # Explicit 50 second pause
-        page.wait_for_timeout(50000) 
+        # Pauses the script until you press ENTER in the terminal
+        input("\n>>> Press ENTER in this terminal once you are logged in (or ready to continue)... <<<\n")
         
-        logging.info("50 seconds is up! Resuming automation...")
+        logging.info("Resuming automation...")
 
     def search_and_apply(self, page, keyword):
         # Format the keyword for a URL (e.g., "NetSuite Developer" -> "NetSuite+Developer")
@@ -133,7 +137,12 @@ class AndersonFrankBot:
                 search_url += f"&page={page_num}"
                 
             logging.info(f"Scanning for: '{keyword}' (Page {page_num})")
-            page.goto(search_url)
+            
+            try:
+                page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+            except PlaywrightTimeoutError:
+                logging.warning("Page load timed out, but proceeding as the DOM might be ready...")
+                
             self.human_delay(3, 5)
             
             try:
@@ -183,9 +192,11 @@ class AndersonFrankBot:
                     # Manually open in a new tab to avoid expect_page() timeout if AF doesn't use target="_blank"
                     job_url = urllib.parse.urljoin("https://www.andersonfrank.com", job_href)
                     job_page = page.context.new_page()
-                    job_page.goto(job_url)
                     
-                    job_page.wait_for_load_state("domcontentloaded")
+                    try:
+                        job_page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
+                    except PlaywrightTimeoutError:
+                        logging.warning("Job page load timed out, attempting to proceed...")
                     
                     needs_manual = self.process_job_page(job_page, job_id, title, company)
                     if not needs_manual:
@@ -206,7 +217,7 @@ class AndersonFrankBot:
         try:
             job_page.wait_for_timeout(3500)
             
-            # Generalized Apply button selector
+            # Generalized Apply button selector for the first step
             apply_button = job_page.locator("a:has-text('Apply'), button:has-text('Apply')").first
             if not apply_button.is_visible():
                 logging.info("   -> EXTERNAL LINK: No native Apply button.")
@@ -215,12 +226,40 @@ class AndersonFrankBot:
 
             logging.info("   -> FOUND native Apply button. Clicking...")
             apply_button.click()
-            job_page.wait_for_timeout(3000)
+            
+            # === NEW CODE: Handle the "Confirm resume and apply" modal ===
+            try:
+                # Wait up to 5 seconds for the confirmation modal/button to appear.
+                # This regex looks for a button that contains EITHER "Apply with" OR "Confirm resume"
+                # This perfectly captures "Apply with Moses Rose technical expert resume"
+                confirm_button = job_page.locator("button").filter(
+                    has_text=re.compile(r"(Apply with|Confirm resume)", re.IGNORECASE)
+                ).first
+                
+                # Wait for the button to actually be visible on screen
+                confirm_button.wait_for(state="visible", timeout=5000)
+                
+                button_text = confirm_button.inner_text().strip()
+                logging.info(f"   -> FOUND final apply button: '{button_text}'. Clicking...")
+                
+                confirm_button.click()
+                
+                # Wait a few seconds for the application to successfully process
+                job_page.wait_for_timeout(4000)
+                logging.info("   -> Successfully applied!")
+                
+                # Update database status to success
+                self.db.log_job(job_id, title, company, "APPLIED_SUCCESSFULLY")
+                self.applied_count += 1
+                
+                # Close the tab because we succeeded
+                return False
+                
+            except PlaywrightTimeoutError:
+                # If the button doesn't appear, the form might require manual fields (like cover letter)
+                logging.info("   -> Could not find final confirmation button within 5 seconds. Manual review needed.")
+                self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
 
-            # At this point, Anderson Frank might just ask for a CV upload or a simple form.
-            # We leave the tab open for manual review so you can see what AF requires.
-            logging.info("   -> Left open to determine Anderson Frank's form structure.")
-            self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
             return True 
 
         except Exception as e:
