@@ -13,7 +13,7 @@ NAUKRI_PASS = os.getenv("NAUKRI_PASS")
 
 TARGET_KEYWORDS = ["NetSuite Developer", "NetSuite Technical Consultant", "NetSuite Integration"]
 MAX_APPLICATIONS_PER_DAY = 20
-MAX_PAGES_PER_KEYWORD = 5
+MAX_PAGES_PER_KEYWORD = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
