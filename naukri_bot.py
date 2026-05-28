@@ -11,9 +11,9 @@ load_dotenv()
 NAUKRI_EMAIL = os.getenv("NAUKRI_EMAIL")
 NAUKRI_PASS = os.getenv("NAUKRI_PASS")
 
-TARGET_KEYWORDS = ["NetSuite Developer", "NetSuite Technical Consultant", "NetSuite Integration"]
-MAX_APPLICATIONS_PER_DAY = 20
-MAX_PAGES_PER_KEYWORD = 10
+TARGET_KEYWORDS = ["NetSuite Developer", "NetSuite Technical Consultant", "NetSuite Integration", "NetSuite"]
+MAX_APPLICATIONS_PER_DAY = 30
+MAX_PAGES_PER_KEYWORD = 30
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

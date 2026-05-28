@@ -26,8 +26,8 @@ PROFILE = {
 }
 
 DB_NAME = "anderson_jobs.db" 
-MAX_APPLICATIONS_PER_DAY = 20
-MAX_PAGES_PER_KEYWORD = 5
+MAX_APPLICATIONS_PER_DAY = 500
+MAX_PAGES_PER_KEYWORD = 19
 # ==========================================
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
