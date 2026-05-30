@@ -52,7 +52,7 @@ class NaukriBot:
         time.sleep(random.uniform(min_sec, max_sec))
         
     def is_relevant_job(self, title):
-        # STRCTLY restricted to prevent catching Medical Consultants or Civil Engineers
+        # STRICTLY restricted to prevent catching Medical Consultants or Civil Engineers
         core_tech = ["netsuite", "erp", "boomi", "celigo"]
         return any(tech in title.lower() for tech in core_tech)
 
@@ -139,8 +139,16 @@ class NaukriBot:
                 search_url += f"-{page_num}"
                 
             logging.info(f"Scanning for: '{keyword}' (Page {page_num})")
-            page.goto(search_url)
             
+            # --- RATIONAL FIX: Network-resilient navigation ---
+            try:
+                page.goto(search_url, timeout=30000)
+            except Exception as e:
+                logging.error(f"Network error loading page {page_num} for {keyword}: {e}")
+                logging.info("Internet might be unstable. Pausing for 5 seconds before moving to next keyword...")
+                time.sleep(5)
+                break # Break out of this keyword's pagination and try the next keyword
+
             try:
                 page.wait_for_selector("[data-job-id]", timeout=20000)
                 job_cards = page.locator("[data-job-id]").all()
