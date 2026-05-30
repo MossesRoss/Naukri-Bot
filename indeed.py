@@ -161,12 +161,13 @@ class IndeedBot:
                     company = company_elem.inner_text().strip() if company_elem.is_visible() else "Unknown"
                     
                     # Indeed Job ID (jk) is usually in the href of the title link or a data attribute
-                    link_elem = card.locator("a[data-jk]").first
-                    if link_elem.is_visible():
+                    link_elem = card.locator("h2.jobTitle a, a[data-jk]").first
+                    href = link_elem.get_attribute("href") if link_elem.is_visible() else ""
+                    
+                    if link_elem.is_visible() and link_elem.get_attribute("data-jk"):
                         job_id = link_elem.get_attribute("data-jk")
                     else:
                         # Fallback parsing ID from URL if data attribute is missing
-                        href = title_elem.get_attribute("href") or ""
                         job_id = href.split("jk=")[-1].split("&")[0] if "jk=" in href else str(random.randint(10000, 99999))
 
                     if not job_id or self.db.has_applied(job_id):
@@ -180,22 +181,31 @@ class IndeedBot:
 
                     logging.info(f"Evaluating: {title} at {company}")
                     
-                    # Click the card to open the right-pane details
-                    card.click()
-                    self.human_delay(2, 4)
+                    # RATIONAL FIX: Manually open a new tab directly to the job URL
+                    # This bypasses any flaky JavaScript interceptors or missing target="_blank" attributes
+                    job_page = page.context.new_page()
                     
-                    # Wait for right pane to load
-                    right_pane = page.locator(".jobsearch-RightPane, .jobsearch-ViewJobLayout-jobDisplay").first
+                    if href and href.startswith("/"):
+                        full_job_url = f"https://{INDEED_DOMAIN}{href}"
+                    elif href and href.startswith("http"):
+                        full_job_url = href
+                    else:
+                        full_job_url = f"https://{INDEED_DOMAIN}/viewjob?jk={job_id}"
+                        
                     try:
-                        right_pane.wait_for(state="visible", timeout=10000)
-                    except:
-                        logging.warning("   -> Right pane did not load. Skipping.")
-                        continue
+                        job_page.goto(full_job_url, wait_until="domcontentloaded", timeout=40000)
+                        self.human_delay(2, 4)
 
-                    needs_manual = self.process_job_pane(page, job_id, title, company)
-                    
-                    if needs_manual:
-                        logging.info(f"   -> MANUAL INTERVENTION REQUIRED for {company}. Proceeding to next.")
+                        needs_manual = self.process_job_page(job_page, job_id, title, company)
+                        
+                        if needs_manual:
+                            logging.info(f"   -> MANUAL INTERVENTION REQUIRED for {company}. Proceeding to next (Tab left open).")
+                        else:
+                            job_page.close()
+                            
+                    except Exception as e:
+                        logging.error(f"   -> Failed to load job page in new tab: {e}")
+                        job_page.close()
                     
                     self.human_delay(1, 2)
 
@@ -206,10 +216,10 @@ class IndeedBot:
             if skipped_due_to_db > 0:
                 logging.info(f"   -> Skipped {skipped_due_to_db} jobs on this page because they were already in the database.")
 
-    def process_job_pane(self, page, job_id, title, company):
+    def process_job_page(self, job_page, job_id, title, company):
         try:
             # 1. Look for Indeed "Easily apply" button (Usually an ID or specific text)
-            apply_button = page.locator("#indeedApplyButton, button:has-text('Apply now')").first
+            apply_button = job_page.locator("#indeedApplyButton, button:has-text('Apply now')").first
             
             if not apply_button.is_visible():
                 logging.info("   -> EXTERNAL LINK: No native Apply button (Likely 'Apply on company site').")
@@ -229,7 +239,7 @@ class IndeedBot:
                 self.human_delay(1, 2)
                 
                 # Check for completion (Submit application button)
-                final_submit_btn = page.locator("button:has-text('Submit your application')").first
+                final_submit_btn = job_page.locator("button:has-text('Submit your application')").first
                 if final_submit_btn.is_visible():
                     final_submit_btn.click()
                     self.human_delay(3, 5)
@@ -238,13 +248,13 @@ class IndeedBot:
                     self.applied_count += 1
                     
                     # Close the post-apply confirmation modal if it appears
-                    close_btn = page.locator("button#close-popup, button[aria-label='Close']").first
+                    close_btn = job_page.locator("button#close-popup, button[aria-label='Close']").first
                     if close_btn.is_visible(): close_btn.click()
                     
                     return False # Success, no manual intervention needed
 
                 # Identify visible inputs in the modal
-                modal_inputs = page.locator("#ia-container input:not([type='hidden']), #ia-container textarea, #ia-container select").all()
+                modal_inputs = job_page.locator("#ia-container input:not([type='hidden']), #ia-container textarea, #ia-container select").all()
                 progress_made = False
 
                 for field in modal_inputs:
@@ -293,7 +303,7 @@ class IndeedBot:
                                     pass
 
                 # Look for navigation buttons (Continue, Next, Review)
-                nav_btn = page.locator("button:has-text('Continue'), button:has-text('Review your application')").first
+                nav_btn = job_page.locator("button:has-text('Continue'), button:has-text('Review your application')").first
                 if nav_btn.is_visible():
                     # Check if disabled due to mandatory fields we failed to fill
                     is_disabled = nav_btn.evaluate("el => el.disabled || el.hasAttribute('aria-disabled')")
@@ -317,22 +327,22 @@ class IndeedBot:
             self.db.log_job(job_id, title, company, "MANUAL_INCOMPLETE")
             
             # Click the exit/X button on the modal so we can proceed to the next job in the background loop
-            close_modal = page.locator("button[aria-label='Close application'], #close-popup").first
+            close_modal = job_page.locator("button[aria-label='Close application'], #close-popup").first
             if close_modal.is_visible():
                 close_modal.click()
                 self.human_delay(1)
-                confirm_close = page.locator("button:has-text('Discard'), button:has-text('Exit')").first
+                confirm_close = job_page.locator("button:has-text('Discard'), button:has-text('Exit')").first
                 if confirm_close.is_visible(): confirm_close.click()
             
             return True 
 
         except Exception as e:
-            logging.error(f"   -> ERROR processing job pane: {e}")
+            logging.error(f"   -> ERROR processing job page: {e}")
             self.db.log_job(job_id, title, company, "FAILED_ERROR")
             
             # Attempt cleanup
             try:
-                page.locator("button[aria-label='Close application']").first.click(timeout=1000)
+                job_page.locator("button[aria-label='Close application']").first.click(timeout=1000)
             except:
                 pass
             return True 
